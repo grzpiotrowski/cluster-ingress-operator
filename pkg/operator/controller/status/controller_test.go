@@ -589,7 +589,7 @@ func Test_computeOperatorUpgradeableCondition(t *testing.T) {
 			expectUpgradeable: false,
 		},
 		{
-			description:                   "standard gatewayapi crd, incorrect schema",
+			description:                   "standard gatewayapi crd, incomplete schema",
 			ingresscontrollersUpgradeable: []bool{true, true},
 			gatewayAPICRDs: []apiextensionsv1.CustomResourceDefinition{
 				{
@@ -601,8 +601,7 @@ func Test_computeOperatorUpgradeableCondition(t *testing.T) {
 					},
 				},
 			},
-			// passing for now, until crd-schema-checker is introduced
-			expectUpgradeable: true,
+			expectUpgradeable: false,
 		},
 	}
 

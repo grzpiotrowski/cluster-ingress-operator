@@ -421,21 +421,30 @@ func checkGatewayAPICRDs(gatewayAPICRDs []apiextensionsv1.CustomResourceDefiniti
 		return true, "No Gateway API CRDs found, upgradeable by default."
 	}
 
-	managedCRDNames := map[string]bool{}
+	managedCRDMap := make(map[string]*apiextensionsv1.CustomResourceDefinition)
 	for _, crd := range managedGatewayAPICRDs {
-		managedCRDNames[crd.Name] = true
+		managedCRDMap[crd.Name] = crd
 	}
 
 	nonStandardCRDs := []string{}
+	incompatibleCRDs := []string{}
+
 	for _, crd := range gatewayAPICRDs {
-		if !managedCRDNames[crd.Name] {
+		expectedCRD, exists := managedCRDMap[crd.Name]
+		if !exists {
 			nonStandardCRDs = append(nonStandardCRDs, crd.Name)
+		} else if !cmp.Equal(crd, *expectedCRD, cmpopts.EquateEmpty()) {
+			incompatibleCRDs = append(incompatibleCRDs, crd.Name)
 		}
-		// else: crd-schema-checker
+
 	}
 
 	if len(nonStandardCRDs) > 0 {
 		return false, fmt.Sprintf("Non-standard Gateway API CRDs found: %s", strings.Join(nonStandardCRDs, ", "))
+	}
+
+	if len(incompatibleCRDs) > 0 {
+		return false, fmt.Sprintf("Incompatible Gateway API CRDs found: %s", strings.Join(incompatibleCRDs, ", "))
 	}
 
 	return true, ""
