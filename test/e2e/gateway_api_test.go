@@ -6,6 +6,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -86,6 +87,7 @@ func TestGatewayAPI(t *testing.T) {
 	if gatewayAPIControllerEnabled {
 		t.Run("testGatewayAPIObjects", testGatewayAPIObjects)
 		t.Run("testGatewayAPIIstioInstallation", testGatewayAPIIstioInstallation)
+		t.Run("TestGatewayAPIDNS", TestGatewayAPIDNS)
 	} else {
 		t.Log("Gateway API Controller not enabled, skipping testGatewayAPIObjects and testGatewayAPIIstioInstallation")
 	}
@@ -263,6 +265,69 @@ func testGatewayAPIResourcesProtection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGatewayAPIDNS(t *testing.T) {
+	t.Run("multipleGatewaysSameListenerHostname", func(t *testing.T) {
+
+		gatewayClass, err := createGatewayClass(operatorcontroller.OpenShiftDefaultGatewayClassName, operatorcontroller.OpenShiftGatewayClassControllerName)
+
+		// Use the dnsConfig base domain set up in TestMain.
+		domain := "gws." + dnsConfig.Spec.BaseDomain
+
+		// Create two Gateways with the same listener hostname "foo.example.com"
+		gw1, err := createGatewayWithListener(gatewayClass, "gw1", operatorcontroller.DefaultOperandNamespace, "foo.example.com."+domain)
+		gw2, err := createGatewayWithListener(gatewayClass, "gw2", operatorcontroller.DefaultOperandNamespace, "foo.example.com."+domain)
+
+		t.Cleanup(func() {
+			gw1 := gatewayapiv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "gw1", Namespace: operatorcontroller.DefaultOperandNamespace}}
+			gw2 := gatewayapiv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "gw2", Namespace: operatorcontroller.DefaultOperandNamespace}}
+			if err := kclient.Delete(context.TODO(), &gw1); err != nil {
+				if errors.IsNotFound(err) {
+					return
+				}
+				t.Errorf("failed to delete gateway %q: %v", gw1.Name, err)
+			}
+			if err := kclient.Delete(context.TODO(), &gw2); err != nil {
+				if errors.IsNotFound(err) {
+					return
+				}
+				t.Errorf("failed to delete gateway %q: %v", gw2.Name, err)
+			}
+		})
+
+		if err != nil {
+			t.Fatalf("failed to create first gateway with hostname foo.example.com: %v", err)
+		}
+
+		assertGatewaySuccessful(t, operatorcontroller.DefaultOperandNamespace, "gw1")
+		assertGatewaySuccessful(t, operatorcontroller.DefaultOperandNamespace, "gw2")
+
+		gw1DNSRecordName := operatorcontroller.GatewayDNSRecordName(gw1, "foo.example.com."+domain+".")
+		gw2DNSRecordName := operatorcontroller.GatewayDNSRecordName(gw2, "foo.example.com."+domain+".")
+
+		t.Logf("Created gateways %s and %s with hostname foo.example.com",
+			gw1.Name, gw2.Name)
+
+		// Verify that a DNSRecord is created for each unique hostname.
+		if err := assertDNSRecord(t, gw1DNSRecordName); err != nil {
+			t.Errorf("DNSRecord for hostname %s not ready: %v", "foo.example.com."+domain, err)
+		}
+		if err := assertDNSRecord(t, gw2DNSRecordName); err != nil {
+			t.Errorf("DNSRecord for hostname %s not ready: %v", "foo.example.com."+domain, err)
+		}
+
+		expected := []metav1.Condition{
+			{Type: "Conflicted", Status: metav1.ConditionFalse},
+		}
+		waitForGatewayListenerCondition(t, types.NamespacedName{Namespace: gw1.Namespace, Name: gw1.Name}, "http", expected...)
+		waitForGatewayListenerCondition(t, types.NamespacedName{Namespace: gw2.Namespace, Name: gw2.Name}, "http", expected...)
+
+		t.Logf("Hostnames equal: %t", reflect.DeepEqual(gw1.Spec.Listeners[0].Hostname, gw2.Spec.Listeners[0].Hostname))
+
+		// TODO: Test the connection flow...
+
+	})
 }
 
 // ensureCRDs tests that the Gateway API custom resource definitions exist.
