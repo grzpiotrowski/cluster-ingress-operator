@@ -103,6 +103,7 @@ func TestGatewayAPI(t *testing.T) {
 		t.Run("testGatewayAPIIstioInstallation", testGatewayAPIIstioInstallation)
 		t.Run("testGatewayAPIDNS", TestGatewayAPIDNS)
 		t.Run("testGatewayAPIDNSUpdatedListener", TestGatewayAPIDNSUpdatedListener) // Consider changing the name of this test.
+		t.Run("testGatewayAPIDNSListenerWithNoHostname", TestGatewayAPIDNSListenerWithNoHostname)
 
 	} else {
 		t.Log("Gateway API Controller not enabled, skipping controller tests")
@@ -435,13 +436,12 @@ func TestGatewayAPIDNS(t *testing.T) {
 	}
 	// Making the fields optional using a pointer:
 	// https://github.com/openshift/cluster-ingress-operator/blob/e3ad4c57081c3236bde76d67cf0b1e1c47fe6eff/pkg/operator/controller/ingress/poddisruptionbudget_test.go#L13
-	pointerTo := func(s string) *string { return &s }
 	testCases := []struct {
 		name           string
 		createGateways []struct {
 			gatewayName string
 			namespace   string
-			hostname    *string // TODO: Make this optional so we can test for a listener with no hostname
+			hostname    *string
 		}
 		expectedListenerConditions []metav1.Condition
 		expectedDNSRecords         map[expectedDnsRecord]bool
@@ -454,8 +454,8 @@ func TestGatewayAPIDNS(t *testing.T) {
 				namespace   string
 				hostname    *string
 			}{
-				{gatewayName: "gw1", namespace: operatorcontroller.DefaultOperandNamespace, hostname: pointerTo("foo." + domain)},
-				{gatewayName: "gw2", namespace: operatorcontroller.DefaultOperandNamespace, hostname: pointerTo("foo." + domain)},
+				{gatewayName: "gw1", namespace: operatorcontroller.DefaultOperandNamespace, hostname: ptr.To("foo." + domain)},
+				{gatewayName: "gw2", namespace: operatorcontroller.DefaultOperandNamespace, hostname: ptr.To("foo." + domain)},
 			},
 			expectedListenerConditions: []metav1.Condition{
 				{Type: "Accepted", Status: metav1.ConditionTrue},
@@ -484,7 +484,7 @@ func TestGatewayAPIDNS(t *testing.T) {
 				{Type: "ResolvedRefs", Status: metav1.ConditionTrue},
 			},
 			expectedDNSRecords: map[expectedDnsRecord]bool{
-				{dnsName: "", gatewayName: "gw3"}: false,
+				{dnsName: "any", gatewayName: "gw3"}: false,
 			},
 		},
 		{
@@ -494,8 +494,8 @@ func TestGatewayAPIDNS(t *testing.T) {
 				namespace   string
 				hostname    *string
 			}{
-				{gatewayName: "gw4", namespace: operatorcontroller.DefaultOperandNamespace, hostname: pointerTo("foo.apps." + domain)},
-				{gatewayName: "gw5", namespace: operatorcontroller.DefaultOperandNamespace, hostname: pointerTo("*.apps." + domain)},
+				{gatewayName: "gw4", namespace: operatorcontroller.DefaultOperandNamespace, hostname: ptr.To("foo.apps." + domain)},
+				{gatewayName: "gw5", namespace: operatorcontroller.DefaultOperandNamespace, hostname: ptr.To("*.apps." + domain)},
 			},
 			expectedListenerConditions: []metav1.Condition{
 				{Type: "Accepted", Status: metav1.ConditionTrue},
@@ -506,6 +506,7 @@ func TestGatewayAPIDNS(t *testing.T) {
 			expectedDNSRecords: map[expectedDnsRecord]bool{
 				{dnsName: "foo.apps." + domain + ".", gatewayName: "gw4"}: true,
 				{dnsName: "*.apps." + domain + ".", gatewayName: "gw5"}:   true,
+				{dnsName: "any", gatewayName: "gw4"}:                      false,
 			},
 		},
 	}
@@ -573,7 +574,7 @@ func TestGatewayAPIDNSUpdatedListener(t *testing.T) {
 		{Name: "http-listener1", Hostname: ptr.To("foo." + domain)},
 		{Name: "http-listener2", Hostname: ptr.To("bar." + domain)},
 	})
-	// TODO: Create a gateway with multiple listeners (2)
+	// Create a gateway with multiple listeners
 
 	t.Cleanup(func() {
 		gateway := gatewayapiv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "test-gateway", Namespace: operatorcontroller.DefaultOperandNamespace}}
@@ -623,7 +624,7 @@ func TestGatewayAPIDNSUpdatedListener(t *testing.T) {
 		t.Fatalf("failed to get gateway resource: %v", err)
 	}
 
-	// TODO: Delete one of the listeners
+	// Delete one of the listeners
 	var updatedListeners []gatewayapiv1.Listener
 	for _, l := range gateway.Spec.Listeners {
 		if l.Name == "http-listener2" {
@@ -637,7 +638,7 @@ func TestGatewayAPIDNSUpdatedListener(t *testing.T) {
 	}
 	t.Logf("Deleted listener %s from gateway %s", "http-listener2", gateway.Name)
 
-	// TODO: Check the DNSRecord gets removed
+	// Check the DNSRecord gets removed
 
 	if err := assertExpectedDNSRecords(t, map[expectedDnsRecord]bool{
 		{dnsName: "baz." + domain + ".", gatewayName: "test-gateway"}: true,
@@ -647,9 +648,67 @@ func TestGatewayAPIDNSUpdatedListener(t *testing.T) {
 		t.Fatalf("DNSRecord expectations not met: %v", err)
 	}
 
-	// TODO: Delete the gateway
+	// Delete the gateway
 
-	// TODO: Check the DNSRecord gets deleted for the remaining listener hostname
+	if err := kclient.Delete(context.TODO(), gateway); err != nil {
+		if errors.IsNotFound(err) {
+			return
+		}
+		t.Errorf("failed to delete gateway %q: %v", gateway.Name, err)
+	}
+
+	// Check the DNSRecord gets deleted for the remaining listener hostname
+	if err := assertExpectedDNSRecords(t, map[expectedDnsRecord]bool{
+		{dnsName: "baz." + domain + ".", gatewayName: "test-gateway"}: false,
+	}); err != nil {
+		t.Fatalf("DNSRecord expectations not met: %v", err)
+	}
+}
+
+func TestGatewayAPIDNSListenerWithNoHostname(t *testing.T) {
+	gatewayClass, err := createGatewayClass(operatorcontroller.OpenShiftDefaultGatewayClassName, operatorcontroller.OpenShiftGatewayClassControllerName)
+	if err != nil {
+		t.Fatalf("failed to create gatewayclass: %v", err)
+	}
+
+	// Create a Gateway with the listener hostname "foo.[...]"
+	gateway, err := createGatewayWithListeners(gatewayClass, "test-gateway", operatorcontroller.DefaultOperandNamespace, []struct {
+		Name     string
+		Hostname *string
+	}{
+		{Name: "http-listener-no-host", Hostname: nil},
+	})
+
+	t.Cleanup(func() {
+		gateway := gatewayapiv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "test-gateway", Namespace: operatorcontroller.DefaultOperandNamespace}}
+		if err := kclient.Delete(context.TODO(), &gateway); err != nil {
+			if errors.IsNotFound(err) {
+				return
+			}
+			t.Errorf("failed to delete gateway %q: %v", gateway.Name, err)
+		}
+	})
+
+	if err != nil {
+		t.Fatalf("failed to create first gateway with no hostname: %v", err)
+	}
+
+	gateway, err = assertGatewaySuccessful(t, operatorcontroller.DefaultOperandNamespace, "test-gateway")
+	if err != nil {
+		t.Fatalf("failed to create the test gateway: %v", err)
+	}
+
+	t.Logf("Created gateway %s with a listener with no hostname", gateway.Name)
+
+	// TODO: Assert that there is no dnsrecord at all existing for the test gateway
+	// This would check if any record exists with dnsRecord.Labels["gateway.networking.k8s.io/gateway-name"] == gateway.Name
+
+	// Inside a poll until timeout:
+	// - List all DNSRecords in the DefaultOperandNamespace
+	// - Check each DNSRecord for the label: dnsRecord.Labels["gateway.networking.k8s.io/gateway-name"] == gateway.Name
+	// Run until polling timeout and evaluate:
+	// - If there is any dnsrecord found with the gateway-name == gateway.Name label - test failed
+	// - If there is no dnsrecord found with this label after the polling timeout - test passes
 
 }
 
