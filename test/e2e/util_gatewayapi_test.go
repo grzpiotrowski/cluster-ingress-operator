@@ -809,12 +809,6 @@ type expectedDnsRecord struct {
 func assertExpectedDNSRecords(t *testing.T, expectations map[expectedDnsRecord]bool) error {
 	t.Helper()
 
-	/*
-		loop through the expecatations
-		pass the shouldExpect to the polling function assertExpectedDNSRecord
-		once the function returns, decide the outcome success
-	*/
-
 	var expectationsMet bool
 	// Poll every second for up to three minutes.
 	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 2*time.Minute, false, func(context context.Context) (bool, error) {

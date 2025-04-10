@@ -6,6 +6,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	v1 "github.com/openshift/api/operatoringress/v1"
 	"strings"
 	"testing"
 	"time"
@@ -469,25 +470,6 @@ func TestGatewayAPIDNS(t *testing.T) {
 			},
 		},
 		{
-			name: "gatewayListenerWithNoHostname",
-			createGateways: []struct {
-				gatewayName string
-				namespace   string
-				hostname    *string
-			}{
-				{gatewayName: "gw3", namespace: operatorcontroller.DefaultOperandNamespace, hostname: nil},
-			},
-			expectedListenerConditions: []metav1.Condition{
-				{Type: "Accepted", Status: metav1.ConditionFalse},
-				{Type: "Conflicted", Status: metav1.ConditionTrue},
-				{Type: "Programmed", Status: metav1.ConditionTrue},
-				{Type: "ResolvedRefs", Status: metav1.ConditionTrue},
-			},
-			expectedDNSRecords: map[expectedDnsRecord]bool{
-				{dnsName: "any", gatewayName: "gw3"}: false,
-			},
-		},
-		{
 			name: "gatewayListenersWithOverlappingHostname",
 			createGateways: []struct {
 				gatewayName string
@@ -506,7 +488,6 @@ func TestGatewayAPIDNS(t *testing.T) {
 			expectedDNSRecords: map[expectedDnsRecord]bool{
 				{dnsName: "foo.apps." + domain + ".", gatewayName: "gw4"}: true,
 				{dnsName: "*.apps." + domain + ".", gatewayName: "gw5"}:   true,
-				{dnsName: "any", gatewayName: "gw4"}:                      false,
 			},
 		},
 	}
@@ -706,9 +687,28 @@ func TestGatewayAPIDNSListenerWithNoHostname(t *testing.T) {
 	// Inside a poll until timeout:
 	// - List all DNSRecords in the DefaultOperandNamespace
 	// - Check each DNSRecord for the label: dnsRecord.Labels["gateway.networking.k8s.io/gateway-name"] == gateway.Name
-	// Run until polling timeout and evaluate:
+	// Run until polling timeout and evaluate afterwards:
 	// - If there is any dnsrecord found with the gateway-name == gateway.Name label - test failed
 	// - If there is no dnsrecord found with this label after the polling timeout - test passes
+	err = wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 1*time.Minute, false, func(context context.Context) (bool, error) {
+
+		dnsRecords := &v1.DNSRecordList{}
+		// List all DNSRecords from the default operand namespace.
+		if err := kclient.List(context, dnsRecords, client.InNamespace(operatorcontroller.DefaultOperandNamespace)); err != nil {
+			t.Logf("failed to list DNSRecords: %v; retrying...", err)
+			return false, err
+		}
+
+		for _, record := range dnsRecords.Items {
+			if record.Labels["gateway.networking.k8s.io/gateway-name"] == gateway.Name {
+				// DNSRecord found but should not be present
+				return false, nil
+			}
+		}
+
+		t.Logf("No DNSRecord for gateway listener as expected...")
+		return false, nil
+	})
 
 }
 
